@@ -5,24 +5,14 @@
 //  Created by Masanori Ogawa on 2024/12/09.
 //
 
-import SwiftUI
-import Foundation
 import ComposableArchitecture
+import Foundation
+import SwiftUI
 
 struct Contact: Equatable, Identifiable {
   let id: UUID
   var name: String
 }
-
-extension ContactsFeature {
-  @Reducer
-  enum Destination {
-    case addContact(AddContactFeature)
-    case alert(AlertState<ContactsFeature.Action.Alert>)
-  }
-}
-
-extension ContactsFeature.Destination.State: Equatable {}
 
 @Reducer
 struct ContactsFeature {
@@ -30,12 +20,14 @@ struct ContactsFeature {
   struct State: Equatable {
     var contacts: IdentifiedArrayOf<Contact> = []
     @Presents var destination: Destination.State?
+    var path = StackState<ContactDetailFeature.State>()
   }
 
   enum Action {
     case addButtonTapped
     case deleteButtonTapped(id: Contact.ID)
     case destination(PresentationAction<Destination.Action>)
+    case path(StackAction<ContactDetailFeature.State, ContactDetailFeature.Action>)
 
     enum Alert: Equatable {
       case confirmDeletion(id: Contact.ID)
@@ -68,14 +60,33 @@ struct ContactsFeature {
       case let .deleteButtonTapped(id):
         state.destination = .alert(.deleteConfirmation(id: id))
         return .none
+      case let .path(.element(id: id, action: .delegate(.confirmDeletion))):
+         guard let detailState = state.path[id: id] else { return .none }
+         state.contacts.remove(id: detailState.contact.id)
+         return .none
+      case .path:
+          return .none
       }
     }
     // なぜifLetが必要？
     // これは、addContactがnilでない場合にのみ、AddContactFeatureを表示するためです。
     // これにより、不要なリソースの消費を防ぎます。
     .ifLet(\.$destination, action: \.destination)
+    .forEach(\.path, action: \.path) {
+      ContactDetailFeature()
+    }
   }
 }
+
+extension ContactsFeature {
+  @Reducer
+  enum Destination {
+    case addContact(AddContactFeature)
+    case alert(AlertState<ContactsFeature.Action.Alert>)
+  }
+}
+
+extension ContactsFeature.Destination.State: Equatable {}
 
 // MARK: - Dialog
 
@@ -95,19 +106,22 @@ struct ContactsView: View {
   @Bindable var store: StoreOf<ContactsFeature>
 
   var body: some View {
-    NavigationStack {
+    NavigationStack(path: $store.scope(state: \.path, action: \.path)) {
       List {
         ForEach(store.contacts) { contact in
-          HStack {
-            Text(contact.name)
-            Spacer()
-            Button {
-              store.send(.deleteButtonTapped(id: contact.id))
-            } label: {
-              Image(systemName: "trash")
-                .foregroundStyle(.red)
+          NavigationLink(state: ContactDetailFeature.State(contact: contact)) {
+            HStack {
+              Text(contact.name)
+              Spacer()
+              Button {
+                store.send(.deleteButtonTapped(id: contact.id))
+              } label: {
+                Image(systemName: "trash")
+                  .foregroundStyle(.red)
+              }
             }
           }
+          .buttonStyle(.borderless)
         }
       }
       .navigationTitle("Contacts")
@@ -120,6 +134,8 @@ struct ContactsView: View {
           }
         }
       }
+    } destination: { store in
+      ContactDetailView(store: store)
     }
     .sheet(
       item: $store.scope(state: \.destination?.addContact, action: \.destination.addContact)
